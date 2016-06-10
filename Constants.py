@@ -16,4 +16,4 @@ m0=9.1e-31 # kg
 kT=.0257 # eV
 
 # Conversion from eV to Joules
-eVToJoules=1.602e-19 # J/eV
+eVToJoules=q # J/eV

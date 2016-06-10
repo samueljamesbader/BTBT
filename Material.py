@@ -3,8 +3,11 @@ import scipy.optimize as sciopt
 from copy import deepcopy
 import numpy as np
 from Constants import eps0,q,hbar,m0,kT,eVToJoules
-
+from FermiDirac import fermi_dirac_one_half, int_fermi_dirac_one_half, fermi_dirac_zero
 # Dictionary of parameters for materials used in these calculations
+
+#kT=77/300 * kT
+
 materialparameters={
                     
     # Gallium Nitride
@@ -21,7 +24,7 @@ materialparameters={
         "mhdos": 1.5*m0, # kg
         
         # Effective mass for tunneling (Sze convention)
-        "mrtunnel": 2/(1/.2+1/.259)*m0, # kg
+        "mrtunnel": 2/(1/.2+1/1.78)*m0, # kg
         
         # Dopant types and depths
         "dopants": {
@@ -32,6 +35,35 @@ materialparameters={
             "Mg": {
                 "type": "acceptor",
                 "E": .23 # eV
+            }
+        }
+    },
+                    
+    # Gallium Arsenide
+    "GaAs": {
+            
+        # Permittivity
+        "eps": 12.9*eps0,
+        
+        # Bandgap
+        "Eg": 1.42, # eV
+        
+        # Effective masses for DOS calculations
+        "medos": .063*m0, # kg
+        "mhdos": .53*m0, # kg
+        
+        # Effective mass for tunneling (Sze convention)
+        #"mrtunnel": 2/(1/+1/)*m0, # kg
+        
+        # Dopant types and depths
+        "dopants": {
+            "S": {
+                "type": "donor",
+                "E":.006 # eV
+            },
+            "C": {
+                "type": "acceptor",
+                "E": .02 # eV
             }
         }
     },
@@ -69,7 +101,7 @@ materialparameters={
 # Convenience class that represents a chunk of a specific material with uniform doping
 class Material:
     
-    # Initialize the material with a name and doping, and oes the bulk energy level calculations
+    # Initialize the material with a name and doping, and do the bulk chemical potential calculations
     # 
     # name: name of the material (eg. "Si")
     #     uses this to pull data from materialparamters dictionary
@@ -104,114 +136,174 @@ class Material:
         self.Ev=-self.Eg/2+self.Emg
         
         # Calculate where the (extrinsic) Fermi level should be in the bulk
-        self._recomputeEBulk()
+        self._recomputeMuBulk()
     
-    # Enforces charge neutrality to find the location of the (extrinsic) Fermi level
+    # Enforces charge neutrality to find the location of the (extrinsic) chemical potential
     # referenced to intrinsic Fermi level, sets it as self.EBulk
-    def _recomputeEBulk(self):
+    def _recomputeMuBulk(self):
         
         # If undoped, EBulk=0 (ie intrinsic)
         if not len(self.dopants.values()):
-            self.EBulk=0
+            self.mu_bulk=0
         else:
             # Find the net doping
             netDope=sum([
                 v["conc"]*(-1 if v["type"]=="donor" else 1)
                     for v in self.dopants.values()])
             # Use the net doping with complete ionization to get a starting guess (E0) for EBulk
-            if(not netDope): E0=0
-            else: E0=np.sign(-netDope)*kT*np.log(abs(netDope)/self.ni)
+            if(not netDope): mu_0=0
+            else: mu_0=np.sign(-netDope)*kT*np.log(abs(netDope)/self.ni)
                 
             # Find EBulk to minimize the net charge in the material
-            res=sciopt.minimize_scalar(lambda E:abs(self.rho(E)),sorted([0,E0]),method='Golden')
-            self.EBulk=res.x
+            res=sciopt.minimize_scalar(lambda mu:abs(self.rho(mu,mu)),sorted([0,mu_0]),method='Golden')
+            self.mu_bulk=res.x
+        
+
+
+            eterm=-q*kT*self.Nc*int_fermi_dirac_one_half((self.mu_bulk-self.Ec)/kT)
+            hterm=-q*kT*self.Nv*int_fermi_dirac_one_half((self.Ev-self.mu_bulk)/kT)
+            if(len(self.dopants)!=1): return
+            d=self.dopants.values()[0]
+            if d["type"]=="donor":
+                dterm=-q*kT*d["conc"]*fermi_dirac_zero(-(self.mu_bulk-self.Ec+d["E"]+np.log(2)*kT)/kT)
+            elif d["type"]=="acceptor":
+                dterm=-q*kT*d["conc"]*fermi_dirac_zero(-(self.Ev+d["E"]-self.mu_bulk+np.log(4)*kT)/kT)
+            self.intrho_ref=eterm+hterm+dterm
+        
+        #assert(len(self.dopants)==1),"Should have one dopant"
+            
+#        if(len(self.dopants)!=1): return
+#        d=self.dopants.values()[0]
+#        if d["type"]=="donor":
+#            self._intrho_ref=\
+#                -q*kT*(self.Nc*int_fermi_dirac_one_half((self.mu_bulk-self.Ec)/kT)
+#                    +d["conc"]*fermi_dirac_zero(-(self.mu_bulk-self.Ec+d["E"]+np.log(2)*kT)/kT))
+#            #self._minorrho=q*(self.p(self.mu_bulk)-self.Na_ionized(self.mu_bulk))
+#            
+#        elif d["type"]=="acceptor":
+#            self._intrho_ref=\
+#                -q*kT*(self.Nv*int_fermi_dirac_one_half((self.Ev-self.mu_bulk)/kT)
+#                    +d["conc"]*fermi_dirac_zero(-(self.Ev+d["E"]-self.mu_bulk+np.log(4)*kT)/kT))
+#            self._minorrho=-q*(self.n(self.mu_bulk)-self.Nd_ionized(self.mu_bulk))
+
+
+            
+#        if d["type"]=="acceptor":
+#            self._intrho_ref=\
+#                q*(self.Nv*int_fermi_dirac_one_half((self.Ev-self.mu_bulk)/kT)
+#                    -d["conc"]*fermi_dirac_zero((self.Ec-d["Ed"]-self.mu_bulk)/kT))
     
     # Returns the electron density when the Fermi level is E (referenced to intrinsic)
-    def n(self,E):
-        return self.ni*np.exp(E/kT)
-        return np.choose((self.Ec-E)<5*kT, [
-            self.ni*np.exp(E/kT),
-            self.Nc*FOneHalf(np.array(E)-self.Ec)
-        ])
-        
-        
-        #return self.Nc*FOneHalf(E,self.Ec)
-        #return self.Nc*FOneHalf(E,self.Ec)
+    def n(self,mu):
+        return self.Nc*fermi_dirac_one_half((mu-self.Ec)/kT)
     
     # Returns the hole density when the Fermi level is E (referenced to intrinsic)
-    def p(self,E):
-        return self.ni*np.exp(-E/kT)
-        return np.choose((E-self.Ev)<5*kT, [
-            self.ni*np.exp(-E/kT),
-            self.Nv*FOneHalf(self.Ev-np.array(E))
-        ])
-        
-        
-        
-        
-        #return self.Nv*FOneHalf(self.Ev,E)
+    def p(self,mu):
+        return self.Nv*fermi_dirac_one_half((self.Ev-mu)/kT)
     
     # Returns the ionized donor concentration when the Fermi level is E (referenced to intrinsic)
-    def Nd_ionized(self,E):
+    def Nd_ionized(self,mu):
         #return sum([ d["conc"]*(1-1/(1+.5*np.exp((self.Ec-d["E"]-E)/kT))) for d in self.dopants.values()
         #            if d["type"]=="donor"])
+        assert(len(self.dopants)==1),"Should have one dopant"
         d=self.dopants.values()[0]
         if d["type"]=="donor":
-            return d["conc"]*(1-1/(1+.5*np.exp((self.Ec-d["E"]-E)/kT)))
+            return d["conc"]*(1/(1+2*np.exp((mu-self.Ec+d["E"])/kT)))
         else: return 0;
     
     # Returns the ionized acceptor concentration when the Fermi level is E (referenced to intrinsic)
-    def Na_ionized(self,E):
+    def Na_ionized(self,mu):
         #return sum([ d["conc"]*(1/(1+4*np.exp((self.Ev+d["E"]-E)/kT))) for d in self.dopants.values()
                     #if d["type"]=="acceptor"])
+        assert(len(self.dopants)==1),"Should have one dopant"
         d=self.dopants.values()[0]
         if d["type"]=="acceptor":
-            return d["conc"]*(1/(1+4*np.exp((self.Ev+d["E"]-E)/kT)))
+            return d["conc"]*(1/(1+4*np.exp((self.Ev+d["E"]-mu)/kT)))
         else: return 0;
     
     # Returns the net charge density when the Fermi level is E (referenced to intrinsic)
-    def rho(self,E,ignoreMinority=False):
-        #assert self.Ec-E>3*kT and E-self.Ev>3*kT, "DEGENERATE!!!"
-        #if (np.any(self.Ec-E<3*kT) or np.any(E-self.Ev<3*kT)):
-            #print "DEGENERATE!!!"
-    
+    def rho(self,EFn,EFp):            
+        #print "ignore minority should probs include minority but eval'd at mu_bulk"
+#        if(ignoreMinority):
+#            if(self.mu_bulk>0):
+#                return q*( self.Nd_ionized(mu)-self.n(mu)
+#                    -self.Na_ionized(self.mu_bulk)+self.p(self.mu_bulk))
+#            else:
+#                return q*(-self.Na_ionized(mu)+self.p(mu)
+#                    +self.Nd_ionized(self.mu_bulk)-self.n(self.mu_bulk))
+#        else:
+#            return q*(self.p(mu)+self.Nd_ionized(mu)-self.n(mu)-self.Na_ionized(mu))
+        return q*(self.p(EFp)+self.Nd_ionized(EFn)-self.n(EFn)-self.Na_ionized(EFp))
+
+    # int dmu from majority,minority=mu_bulk to majority,minority=given values
+    def intrho(self,EFn,EFp):   
+        assert(len(self.dopants)==1),"Should have one dopant"
+        #d=self.dopants.values()[0]
+#        if d["type"]=="donor":
+#            intrho_maj=\
+#                -q*kT*(self.Nc*int_fermi_dirac_one_half((mu-self.Ec)/kT)
+#                    +d["conc"]*fermi_dirac_zero(-(mu-self.Ec+d["E"]+np.log(2)*kT)/kT))
+#        elif d["type"]=="acceptor":
+#            intrho_maj=\
+#                -q*kT*(self.Nv*int_fermi_dirac_one_half((self.Ev-mu)/kT)
+#                    +d["conc"]*fermi_dirac_zero(-(self.Ev+d["E"]-mu+np.log(4)*kT)/kT))
+            #print 'sup: ',intrho_maj[-1], self._intrho_ref, self.Nc*int_fermi_dirac_one_half((mu-self.Ec)/kT)[-1]
+
+
+
+#        intrho=intrho_maj-self._intrho_ref+self._minorrho*(mu-self.mu_bulk)
+
+        eterm=-q*kT*self.Nc*int_fermi_dirac_one_half((EFn-self.Ec)/kT)
+        hterm=-q*kT*self.Nv*int_fermi_dirac_one_half((self.Ev-EFp)/kT)
+        if(len(self.dopants)!=1): return
+        d=self.dopants.values()[0]
+        if d["type"]=="donor":
+            dterm=-q*kT*d["conc"]*fermi_dirac_zero(-(EFn-self.Ec+d["E"]+np.log(2)*kT)/kT)
+        elif d["type"]=="acceptor":
+            dterm=-q*kT*d["conc"]*fermi_dirac_zero(-(self.Ev+d["E"]-EFp+np.log(4)*kT)/kT)
+        intrho=eterm+hterm+dterm - self.intrho_ref
         
-            
-        if(ignoreMinority):
-            if(self.EBulk>0):
-                return q*( self.Nd_ionized(E)-self.n(E))
-            else:
-                return q*(-self.Na_ionized(E)+self.p(E))
-        else:
-            return q*(self.p(E)+self.Nd_ionized(E)-self.n(E)-self.Na_ionized(E))
 
-def FOneHalf(E):
-    #print np.array((E-Eb)/kT)
-    try:
-        len(E)
-    except:
-        return fermihalf(E/kT,1)
-    return np.vectorize(lambda eta: fermihalf(eta,1))(np.array(E/kT))
+        return intrho
+#        if d["type"]=="acceptor":
+#            self._intrho=\
+#                q*(self.Nv*int_fermi_dirac_one_half((self.Ev-self.mu_bulk)/kT)
+#                    -d["conc"]*fermi_dirac_zero(-(self.Ec-d["Ed"]-self.mu_bulk+log(2))/kT))
     
-
-# http://www.scientificpython.net/pyblog/approximate-fermi-dirac-integrals
-def fermihalf(x,sgn):
-    """ Series approximation to the F_{1/2}(x) or F_{-1/2}(x) 
-        Fermi-Dirac integral """
-
-    f = lambda k: np.sqrt(x**2+np.pi**2*(2*k-1)**2)
-
-
-    if sgn>0: # F_{1/2}(x)
-        a = np.array((1.0/770751818298,-1.0/3574503105,-13.0/184757992,
-              85.0/3603084,3923.0/220484,74141.0/8289,-5990294.0/7995))
-        g = lambda k:np.sqrt(f(k)-x)
-
-    else:  # F_{-1/2}(x)
-        a = np.array((-1.0/128458636383,-1.0/714900621,-1.0/3553038,
-                      27.0/381503,3923.0/110242,8220.0/919))
-        g = lambda k:-0.5*np.sqrt(f(k)-x)/f(k)
-
-    F = np.polyval(a,x) + 2*np.sqrt(2*np.pi)*sum(map(g,range(1,21)))
-    return F
-    
+#if __name__ == "__main__":
+#    
+#    uno=Material("GaN",{"Mg":8e19})
+#    print uno.mu_bulk
+#    dos=Material("GaN",{"Si":2e19})
+#    print dos.mu_bulk
+#    print "phib: ",uno.mu_bulk-dos.mu_bulk
+#    
+#    print "N"
+#    tmat=Material("GaN",{"Si":2e19})
+#    #print tmat.Ec-tmat.mu_bulk
+#    defi=np.linspace(0,1.5,1000000)
+#    rhos=tmat.rho(tmat.mu_bulk-defi,tmat.mu_bulk-defi)
+#    #print rhos[-1]/q
+#    print (np.cumsum(rhos)*(defi[1]-defi[0]))[-1]/q
+#    print -tmat.intrho(tmat.mu_bulk-defi,tmat.mu_bulk-defi)[-1]/q
+#    
+#    print "P"
+#    tmat=Material("GaN",{"Mg":8e19})
+#    print tmat.Ev-tmat.mu_bulk
+#    defi=-np.linspace(0,1.5,1000000)
+#    rhos=tmat.rho(tmat.mu_bulk-defi,tmat.mu_bulk-defi)
+#    print rhos[-1]/q
+#    print (np.cumsum(rhos)*(defi[1]-defi[0]))[-1]/q
+#    print -tmat.intrho(tmat.mu_bulk-defi,tmat.mu_bulk-defi)[-1]/q    
+#    
+#    print "SPACING"
+#    nds=tmat.Nd_ionized(tmat.mu_bulk-defi)
+#    print (np.cumsum(nds)*(defi[1]-defi[0]))[-1]
+#    print 2e19*kT*fermi_dirac_zero(-(tmat.mu_bulk-defi[-1]-tmat.Ec+.015+np.log(2)*kT)/kT)-2e19*kT*fermi_dirac_zero(-(tmat.mu_bulk-tmat.Ec+.015+np.log(2)*kT)/kT)
+#    
+#    print "MORE SPACING"
+#    ns=tmat.n(tmat.mu_bulk-defi)
+#    ns2=tmat.Nc*fermi_dirac_one_half((tmat.mu_bulk-defi-tmat.Ec)/kT)
+#    print (np.cumsum(ns)*(defi[1]-defi[0]))[-1]
+#    print tmat.Nc*kT*(int_fermi_dirac_one_half((tmat.mu_bulk-defi[-1]-tmat.Ec)/kT)-int_fermi_dirac_one_half((tmat.mu_bulk-tmat.Ec)/kT))
+#    

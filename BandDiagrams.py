@@ -529,7 +529,9 @@ def generate_exactspikedpin_bandstructure(mat, Lp,Aname,Na, Li, sigmaD, Ln,Dname
     Evp=mp.Ev-mp.EBulk-Va/2
     Ecn=mn.Ec-mn.EBulk+Va/2
     Evn=mn.Ev-mn.EBulk+Va/2    
+    
     Vr=-Va
+    dF=q*sigmaD/mn.eps
     
     print ("EBulk N: ", mn.EBulk    )
     def build_interpolated_rho_ints(bounds,n=1000000):
@@ -537,23 +539,49 @@ def generate_exactspikedpin_bandstructure(mat, Lp,Aname,Na, Li, sigmaD, Ln,Dname
         bd=bounds[1]-bounds[0]
         l=bounds[0]-bd/100
         r=bounds[1]+bd/100
-        Envals=np.linspace(l,r,n)
-        dEn=Envals[1]-Envals[0]
-        nrhos=mn.rho(Envals,ignoreMinority=True)
-        intnrho=interp1d(Envals,-np.cumsum(nrhos)*dEn)
+        
+        lEnvals,dEn=np.linspace(l,mn.EBulk,n,retstep=True)
+        lnrhos=mn.rho(lEnvals,ignoreMinority=True)
+        lncsum=np.cumsum(lnrhos[::-1])[::-1]*dEn
+        
+        rEnvals,dEn=np.linspace(mn.EBulk,r,n,retstep=True)
+        rEnvals=rEnvals[1:]
+        rnrhos=mn.rho(rEnvals,ignoreMinority=True)
+        rncsum=-np.cumsum(rnrhos)*dEn
+        
+        Envals=np.concatenate((lEnvals,rEnvals))
+        ncsum=np.concatenate((lncsum,rncsum))
+        intnrho=interp1d(Envals,ncsum)
+       
+        pbl=lEnvals[0]+Vr#+(Fn(lEnvals[0])-dF)*Li
+        pbr=rEnvals[-1]+Vr
+        print ("N BOUNDS")
+        print (bounds)
+        print ("P BOUNDS")
+        print (pbl,pbr)
+        print (mp.EBulk)
+        
+        
+        lEpvals,dEp=np.linspace(pbl,mp.EBulk,n,retstep=True)
+        lprhos=mp.rho(lEpvals,ignoreMinority=True)
+        lpcsum=np.cumsum(lprhos[::-1])[::-1]*dEp
+        
+        rEpvals,dEp=np.linspace(mp.EBulk,pbr,n,retstep=True)
+        rEpvals=rEpvals[1:]
+        rprhos=mp.rho(rEpvals,ignoreMinority=True)
+        rpcsum=-np.cumsum(rprhos)*dEp
+        
+        Epvals=np.concatenate((lEpvals,rEpvals))
+        pcsum=np.concatenate((lpcsum,rpcsum))
+        intprho=interp1d(Epvals,pcsum)
         
         nrhobulk=intnrho(mn.EBulk)
-        
-        Epvals=Envals+Vr
-        dEp=dEn
-        prhos=mp.rho(Epvals,ignoreMinority=True)
-        intprho=interp1d(Epvals,-np.cumsum(prhos)*dEp)
         prhobulk=intprho(mp.EBulk) 
         
-        return intnrho,intprho,nrhobulk,prhobulk
+        return intnrho,intprho
         
-    bounds=[mn.EBulk-(Ecp-Ecn),mn.Ec+15*kT]
-    intnrho,intprho,nrhobulk,prhobulk\
+    bounds=[mn.EBulk-(Ecp-Ecn),mn.Ec+35*kT]
+    intnrho,intprho\
         =build_interpolated_rho_ints(bounds)
         
     print ("Bounds:")
@@ -561,40 +589,46 @@ def generate_exactspikedpin_bandstructure(mat, Lp,Aname,Na, Li, sigmaD, Ln,Dname
     t1=time.time()
     print ("Building time: ", t1-t0)
     t0=t1
-    
+        
     def Fn(E0n,x=None):
-        if x is not None:
-            pass#print (E0n[0],E0n[-1]),"  ",x
-        try:
-            insqrt=2/mn.eps*(intnrho(E0n)-nrhobulk)
-            #if np.where(np.abs(insqrt)<
-            #assert np.all(insqrt>=-1), "Wrong sign in Fn"
-
-            insqrt=np.clip(insqrt,0,None)            
-            
-            #fd=np.sign(E0n-mn.EBulk)*np.sqrt(insqrt)
-            #print (fd[0],fd[-1])
-        except Exception as e:
-            print (e, E0n)
-            return 0
-        #    exit()
-            
         #if x is not None:
-        #    fd=np.sign(E0n-mn.EBulk)*np.sqrt(insqrt)
-        #    print "    ",(fd[0],fd[-1])
+        #    print(E0n," ",x)
+        try:
+            insqrt=2/mn.eps*intnrho(E0n)
+            insqrt=np.clip(insqrt,0,None)      
+            #if(insqrt<0):
+            #    print ("NEG IN SQRT",E0n,insqrt)
+            return np.sign(E0n-mn.EBulk)*np.sqrt(insqrt)     
             
-            
-            
-        return np.sign(E0n-mn.EBulk)*np.sqrt(insqrt)
+        except Exception as e:
+            print ("in Fn ",e, E0n)
+            return np.inf
+        #if x is not None:
+        #    print (np.sign(E0n-mn.EBulk)*np.sqrt(insqrt))
+         
+        
+    
     def Fp(E0p,x=None):
-        insqrt=2/mn.eps*(intprho(E0p)-prhobulk)
-        insqrt=np.clip(insqrt,0,None)            
-        #assert np.all(insqrt>=0), "Wrong sign in Fp"
-        return np.sign(mp.EBulk-E0p)*np.sqrt(insqrt)
+        try:
+            insqrt=2/mp.eps*(intprho(E0p))
+            insqrt=np.clip(insqrt,0,None)            
+            #assert np.all(insqrt>=0), "Wrong sign in Fp"
+            
+            #if x is not None:
+             #   print (E0p,"  ",x, np.sign(mp.EBulk-E0p)*np.sqrt(insqrt)/1e6)
+                
+            return np.sign(mp.EBulk-E0p)*np.sqrt(insqrt)
+        except Exception as e:
+            print ("in Fp",e,x,E0p)
+            return -np.inf
     
+    res=sciopt.minimize_scalar(lambda E0n: np.abs(E0n+Vr+(Fn(E0n)-dF)*Li-mp.EBulk),bounds=bounds,method="bounded")
+    #res.x
+    #E0n+Vr+(fn-dF)*Li<mp.EBulk
+    bounds[0]=res.x+.00001
+    res=sciopt.minimize_scalar(lambda E0n: np.abs((Fn(E0n)-dF)),bounds=bounds,method="bounded")
+    bounds[1]=res.x-.00001
     
-    
-    dF=q*sigmaD/mn.eps
     def fdiff(E0n):
         #print "fdiff at E0n=",E0n
         try:
@@ -609,17 +643,23 @@ def generate_exactspikedpin_bandstructure(mat, Lp,Aname,Na, Li, sigmaD, Ln,Dname
 
     import matplotlib.pyplot as mpl
     if 1:
-        E0n=np.linspace(bounds[0]+.01,bounds[1]-.01,50)
+        E0n=np.linspace(bounds[0],bounds[1],5000)
         #E0n=np.linspace(1,2,50)
 
         #fdiffs=[Fn(e)-Fp(e+Vr)-dF for e in E0n]
-        fdiffs=fdiff(E0n[5:-5])
+
+        fdiffs=[fdiff(e) for e in E0n]
+        if 0:
+            print ("E0n")
+            print (E0n)
+            print ("fdiffs")
+            print (fdiffs)
         
         #mpl.close('all')
         mpl.figure()
-        mpl.plot(E0n[5:-5],np.abs(fdiffs))
+        mpl.plot(E0n,np.abs(fdiffs),'x')
         mpl.yscale('log')
-
+        
     if 1:
         #print "bounds: ",[mn.EBulk+mn.Eg,mn.EBulk-(Ecp-Ecn)]
         bd=bounds[1]-bounds[0]
@@ -645,7 +685,7 @@ def generate_exactspikedpin_bandstructure(mat, Lp,Aname,Na, Li, sigmaD, Ln,Dname
     t0=t1
     
     print ("Fn: ",Fn(E0n)/1e6," MV/cm")
-    print ("Fp: ",Fp(E0p)/1e6," MV/cm")
+    print ("Fp: ",Fp(E0p+(Fn(E0n)-dF)*Li)/1e6," MV/cm")
     #time.sleep(4)
     
     
@@ -676,7 +716,8 @@ def generate_exactspikedpin_bandstructure(mat, Lp,Aname,Na, Li, sigmaD, Ln,Dname
     #odeint(fn,[E0n,Fn(E0n)])
     
     # x-grid for calculation
-    x=np.linspace(-Lp-Li,Ln,500000)
+    nx=100000
+    x=np.linspace(-Lp-Li,Ln,nx)
     zeroi=np.argmin(np.abs(x))
     zeroadded=False
     if(x[zeroi]):
@@ -686,22 +727,40 @@ def generate_exactspikedpin_bandstructure(mat, Lp,Aname,Na, Li, sigmaD, Ln,Dname
     
     xr=x[zeroi:]
     xl=x[zeroi::-1]
-    x=np.linspace(-Lp-Li,Ln,500000)
+    x=np.linspace(-Lp-Li,Ln,nx)
     
-    print("care")
-    print(E0p)
-    print((lambda E,x: -Fp(E,x))(E0p,xl))
-    print((lambda E,x: np.choose(x<-Li,[[-Fn(E0n,0)+dF]*len(x),-Fp(E,x)]))(E0p,xl))
-    with stdout_redirected(), merged_stderr_stdout():
-        Ecr=Ecn+mn.EBulk-odeint(lambda E,x: -Fn(E,x),E0n,xr,rtol=1e-12,atol=1e-12)
-            
-        Ecl=Ecp+mp.EBulk-odeint(lambda E,x: np.choose(x<-Li,[(-Fn(E0n,0)+dF)*(1+0*x),-Fp(E,x)]),E0p,xl,rtol=1e-12,atol=1e-12)
-        #Ecl=Ecp+mp.EBulk-odeint(lambda E,x: -Fp(E,x),E0p,xl,rtol=1e-12,atol=1e-12)
+    #print("care")
+    #print(E0n)
+    #print((lambda E,x: -Fp(E,x))(E0p,xl))
+    #print((lambda E,x: np.choose(x<-Li,[[-Fn(E0n,0)+dF]*len(x),-Fp(E,x)]))(E0p,xl))
+    #exit()
+    #with stdout_redirected(), merged_stderr_stdout():
+    Ecr=Ecn+mn.EBulk-np.ravel(odeint(\
+        lambda E,x: -Fn(E,x),\
+        E0n,xr,rtol=1e-10,atol=1e-12,hmax=.5e-7))
+    print('int r')
+    Ecl=Ecp+mp.EBulk-np.ravel(odeint(\
+        lambda E,x: np.choose(x<-Li,[(-Fn(E0n,0)+dF)*(1+0*x),-Fp(E,x)]),\
+        E0p,xl,rtol=1e-10,atol=1e-12,hmax=.5e-7))
+    print('int l')
+    
+    rhor=mn.rho(-(Ecr-Ecn-mn.EBulk),ignoreMinority=True)
+    rhol=np.choose(xl<-Li,[[0]*len(xl),mp.rho(-(Ecl-Ecp-mp.EBulk),ignoreMinority=True)])
+    
+    Fr=Fn(-(Ecr-Ecn-mn.EBulk))
+    Fl=np.choose(xl<-Li,[(Fn(E0n,0)-dF)*(1+0*xl),Fp(-(Ecl-Ecp-mp.EBulk))])
+    #print (np.array([Fn(-(e-Ecn-mn.EBulk)) for e in Ecr]))
+    
+    #Ecl=Ecp+mp.EBulk-odeint(lambda E,x: -Fp(E,x),E0p,xl,rtol=1e-12,atol=1e-12)
     Ec=np.concatenate([Ecl[:0:-1],Ecr[zeroadded:]])
     Ef=(x<0)*(Vr/2)+(x>0)*(-Vr/2)
+    rho=np.concatenate([rhol[:0:-1],rhor[zeroadded:]])
+    rho=rho*(abs(rho)/q>1e11)
+    F=np.concatenate([Fl[:0:-1],Fr[zeroadded:]])
     
     Ev=Ec-mn.Eg
     
+    #EcCOMP=Ecp-q/mn.eps*np.trapz(np.trapz(rho,x),x)
     
     #Ep=x[zeroi::-1]*0
     
@@ -710,8 +769,11 @@ def generate_exactspikedpin_bandstructure(mat, Lp,Aname,Na, Li, sigmaD, Ln,Dname
     return {
         "x":x+Li/2,
         "Ec": np.ravel(Ec),
+   #     "EcCOMP": np.ravel(EcCOMP),
         "Ev": np.ravel(Ev),
         "EB": Ef,
+        "F": F,
+        "rho": rho,
         "Vr": Vr,
         "material": mp
         }
@@ -768,3 +830,12 @@ def import_bd(filename,xmin=-1e10,xmax=1e10):
         bd["p"]=data[:,6]
         bd["material"]=Material("GaN")
     return bd
+    
+def bd_to_csv(filename,bd):
+    with open(filename,'w') as f:
+        f.write("    x [Ang],    Ec [eV],    Ev [eV],    mu [eV],   F [V/cm], q [C/cm^3]\n")
+        for (x,Ec,Ev,Ef,F,rho)\
+                in zip(bd['x'],bd['Ec'],bd['Ev'],bd['EB'],bd['F'],bd['rho']):
+            f.write("{:11.4f},{:11.6f},{:11.6f},{:11.6f},{:11.4e},{:11.4e}\n"\
+                .format(x*1e8,Ec,Ev,Ef,F,rho))
+                
